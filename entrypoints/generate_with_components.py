@@ -16,12 +16,16 @@ def parse_args():
 
     parser.add_argument(
         "--vae-path",
+        "--vae_path",
+        dest="vae_path",
         type=str,
         default=None,
         help="Optional path to a standalone VAE checkpoint. Defaults to the base model's VAE subfolder.",
     )
     parser.add_argument(
         "--text-encoder-path",
+        "--text_encoder_path",
+        dest="text_encoder_path",
         type=str,
         default=None,
         help="Optional path to a standalone text encoder checkpoint. Defaults to the base model's text_encoder subfolder.",
