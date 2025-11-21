@@ -77,6 +77,40 @@ def main():
 
         return torch.load(path, map_location="cpu")
 
+    def load_vae_from_checkpoint_file(weight_path, dtype):
+        """Attempt to build a VAE from a checkpoint that embeds its config."""
+
+        checkpoint = load_state_dict(weight_path)
+        if not isinstance(checkpoint, dict):
+            return None
+
+        config = None
+        for key in ("config", "vae_config"):
+            if isinstance(checkpoint.get(key), dict):
+                config = checkpoint[key]
+                break
+
+        if config is None:
+            return None
+
+        state_dict = checkpoint
+        for key in ("state_dict", "model"):
+            if isinstance(checkpoint.get(key), dict):
+                state_dict = checkpoint[key]
+                break
+
+        vae = AutoencoderKL.from_config(config, torch_dtype=dtype)
+        missing, unexpected = vae.load_state_dict(state_dict, strict=False)
+        if missing or unexpected:
+            print(
+                "Loaded VAE from embedded config with relaxed matching. Missing keys:",
+                missing,
+                "Unexpected keys:",
+                unexpected,
+            )
+
+        return vae
+
     # Resolve component locations
     vae_location = args.vae_path or model_root
     text_encoder_location = args.text_encoder_path or model_root
@@ -114,7 +148,12 @@ def main():
             try:
                 vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=engine_config.runtime_config.dtype)
             except Exception as exc:
-                if base_has_vae:
+                vae_from_checkpoint = load_vae_from_checkpoint_file(
+                    args.vae_path, dtype=engine_config.runtime_config.dtype
+                )
+                if vae_from_checkpoint is not None:
+                    vae = vae_from_checkpoint
+                elif base_has_vae:
                     vae = AutoencoderKL.from_pretrained(
                         model_root, subfolder="vae", torch_dtype=engine_config.runtime_config.dtype
                     )
