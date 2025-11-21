@@ -94,25 +94,37 @@ def main():
         # Assume remote repos can provide the needed config files
         return True
 
+    def detect_neighbor_config(weight_path):
+        """Return a directory containing config.json if it lives next to the provided weight file."""
+
+        weight_dir = os.path.dirname(weight_path)
+        return weight_dir if os.path.isfile(os.path.join(weight_dir, "config.json")) else None
+
     base_has_vae = has_available_submodule_config(model_root, "vae")
     base_has_text_encoder = has_available_submodule_config(model_root, "text_encoder")
 
     if args.vae_path and os.path.isfile(args.vae_path):
-        # Direct weight file without a config; load using a base config from the primary model when available
-        try:
-            vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=engine_config.runtime_config.dtype)
-        except Exception as exc:
-            if base_has_vae:
-                vae = AutoencoderKL.from_pretrained(
-                    model_root, subfolder="vae", torch_dtype=engine_config.runtime_config.dtype
-                )
-                vae.load_state_dict(load_state_dict(args.vae_path))
-            else:
-                raise RuntimeError(
-                    "Failed to load VAE weights as a single file and no diffusers-formatted VAE config "
-                    "was found under the base model path. Please provide a diffusers-formatted VAE directory "
-                    "via --vae-path."
-                ) from exc
+        neighbor_config_dir = detect_neighbor_config(args.vae_path)
+        if neighbor_config_dir:
+            vae = AutoencoderKL.from_pretrained(
+                neighbor_config_dir, subfolder=None, torch_dtype=engine_config.runtime_config.dtype
+            )
+        else:
+            # Direct weight file without a config; load using a base config from the primary model when available
+            try:
+                vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=engine_config.runtime_config.dtype)
+            except Exception as exc:
+                if base_has_vae:
+                    vae = AutoencoderKL.from_pretrained(
+                        model_root, subfolder="vae", torch_dtype=engine_config.runtime_config.dtype
+                    )
+                    vae.load_state_dict(load_state_dict(args.vae_path))
+                else:
+                    raise RuntimeError(
+                        "Failed to load VAE weights as a single file and no diffusers-formatted VAE config "
+                        "was found under the base model path. Supply a VAE directory (with config.json) or point "
+                        "--vae-path to a diffusers-formatted folder."
+                    ) from exc
     elif args.vae_path:
         vae = AutoencoderKL.from_pretrained(vae_location, subfolder=None, torch_dtype=engine_config.runtime_config.dtype)
     else:
@@ -127,17 +139,23 @@ def main():
             )
 
     if args.text_encoder_path and os.path.isfile(args.text_encoder_path):
-        if not base_has_text_encoder:
-            raise RuntimeError(
-                "A standalone text encoder weight file was provided but the base model path does not "
-                "expose a diffusers-formatted text_encoder config. Please supply a directory path for "
-                "--text-encoder-path instead."
+        neighbor_config_dir = detect_neighbor_config(args.text_encoder_path)
+        if neighbor_config_dir:
+            text_encoder = T5EncoderModel.from_pretrained(
+                neighbor_config_dir, subfolder=None, torch_dtype=engine_config.runtime_config.dtype
             )
+        else:
+            if not base_has_text_encoder:
+                raise RuntimeError(
+                    "A standalone text encoder weight file was provided but no diffusers-formatted text_encoder "
+                    "config was found next to the weights or under the base model path. Please supply a directory "
+                    "path for --text-encoder-path instead."
+                )
 
-        text_encoder = T5EncoderModel.from_pretrained(
-            model_root, subfolder="text_encoder", torch_dtype=engine_config.runtime_config.dtype
-        )
-        text_encoder.load_state_dict(load_state_dict(args.text_encoder_path))
+            text_encoder = T5EncoderModel.from_pretrained(
+                model_root, subfolder="text_encoder", torch_dtype=engine_config.runtime_config.dtype
+            )
+            text_encoder.load_state_dict(load_state_dict(args.text_encoder_path))
         text_encoder.to(dtype=engine_config.runtime_config.dtype)
     elif args.text_encoder_path:
         text_encoder = T5EncoderModel.from_pretrained(
