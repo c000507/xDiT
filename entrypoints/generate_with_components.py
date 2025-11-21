@@ -48,20 +48,46 @@ def main():
     # Stick with float16 for broad GPU support
     engine_config.runtime_config.dtype = torch.float16
 
+    def load_state_dict(path):
+        if path.endswith(".safetensors"):
+            from safetensors.torch import load_file
+
+            return load_file(path)
+
+        return torch.load(path, map_location="cpu")
+
     # Resolve component locations
     vae_location = args.vae_path or engine_config.model_config.model
     text_encoder_location = args.text_encoder_path or engine_config.model_config.model
 
-    vae = AutoencoderKL.from_pretrained(
-        vae_location,
-        subfolder=None if args.vae_path else "vae",
-        torch_dtype=torch.float16,
-    )
-    text_encoder = T5EncoderModel.from_pretrained(
-        text_encoder_location,
-        subfolder=None if args.text_encoder_path else "text_encoder",
-        torch_dtype=torch.float16,
-    )
+    if args.vae_path and os.path.isfile(args.vae_path):
+        # Direct weight file without a config; load using a base config from the primary model
+        try:
+            vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=torch.float16)
+        except Exception:
+            vae = AutoencoderKL.from_pretrained(
+                engine_config.model_config.model, subfolder="vae", torch_dtype=torch.float16
+            )
+            vae.load_state_dict(load_state_dict(args.vae_path))
+    else:
+        vae = AutoencoderKL.from_pretrained(
+            vae_location,
+            subfolder=None if args.vae_path else "vae",
+            torch_dtype=torch.float16,
+        )
+
+    if args.text_encoder_path and os.path.isfile(args.text_encoder_path):
+        text_encoder = T5EncoderModel.from_pretrained(
+            engine_config.model_config.model, subfolder="text_encoder", torch_dtype=torch.float16
+        )
+        text_encoder.load_state_dict(load_state_dict(args.text_encoder_path))
+        text_encoder.to(dtype=torch.float16)
+    else:
+        text_encoder = T5EncoderModel.from_pretrained(
+            text_encoder_location,
+            subfolder=None if args.text_encoder_path else "text_encoder",
+            torch_dtype=torch.float16,
+        )
 
     pipe = xFuserPixArtAlphaPipeline.from_pretrained(
         engine_config.model_config.model,
