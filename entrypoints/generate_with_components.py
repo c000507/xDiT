@@ -57,37 +57,76 @@ def main():
         return torch.load(path, map_location="cpu")
 
     # Resolve component locations
-    vae_location = args.vae_path or engine_config.model_config.model
-    text_encoder_location = args.text_encoder_path or engine_config.model_config.model
+    model_root = engine_config.model_config.model
+    vae_location = args.vae_path or model_root
+    text_encoder_location = args.text_encoder_path or model_root
+
+    def has_available_submodule_config(root, subfolder):
+        """Return True if the given root can supply a diffusers submodule config."""
+
+        if os.path.isfile(root):
+            # A single checkpoint file cannot host nested configs
+            return False
+
+        if os.path.isdir(root):
+            return os.path.isfile(os.path.join(root, subfolder, "config.json"))
+
+        # Assume remote repos can provide the needed config files
+        return True
+
+    base_has_vae = has_available_submodule_config(model_root, "vae")
+    base_has_text_encoder = has_available_submodule_config(model_root, "text_encoder")
 
     if args.vae_path and os.path.isfile(args.vae_path):
-        # Direct weight file without a config; load using a base config from the primary model
+        # Direct weight file without a config; load using a base config from the primary model when available
         try:
             vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=torch.float16)
-        except Exception:
-            vae = AutoencoderKL.from_pretrained(
-                engine_config.model_config.model, subfolder="vae", torch_dtype=torch.float16
-            )
-            vae.load_state_dict(load_state_dict(args.vae_path))
+        except Exception as exc:
+            if base_has_vae:
+                vae = AutoencoderKL.from_pretrained(model_root, subfolder="vae", torch_dtype=torch.float16)
+                vae.load_state_dict(load_state_dict(args.vae_path))
+            else:
+                raise RuntimeError(
+                    "Failed to load VAE weights as a single file and no diffusers-formatted VAE config "
+                    "was found under the base model path. Please provide a diffusers-formatted VAE directory "
+                    "via --vae-path."
+                ) from exc
+    elif args.vae_path:
+        vae = AutoencoderKL.from_pretrained(vae_location, subfolder=None, torch_dtype=torch.float16)
     else:
-        vae = AutoencoderKL.from_pretrained(
-            vae_location,
-            subfolder=None if args.vae_path else "vae",
-            torch_dtype=torch.float16,
-        )
+        if base_has_vae:
+            vae = AutoencoderKL.from_pretrained(model_root, subfolder="vae", torch_dtype=torch.float16)
+        else:
+            raise RuntimeError(
+                "No VAE path provided and the base model location does not contain a diffusers-formatted VAE. "
+                "Supply --vae-path with a diffusers VAE directory or single-file checkpoint."
+            )
 
     if args.text_encoder_path and os.path.isfile(args.text_encoder_path):
+        if not base_has_text_encoder:
+            raise RuntimeError(
+                "A standalone text encoder weight file was provided but the base model path does not "
+                "expose a diffusers-formatted text_encoder config. Please supply a directory path for "
+                "--text-encoder-path instead."
+            )
+
         text_encoder = T5EncoderModel.from_pretrained(
-            engine_config.model_config.model, subfolder="text_encoder", torch_dtype=torch.float16
+            model_root, subfolder="text_encoder", torch_dtype=torch.float16
         )
         text_encoder.load_state_dict(load_state_dict(args.text_encoder_path))
         text_encoder.to(dtype=torch.float16)
+    elif args.text_encoder_path:
+        text_encoder = T5EncoderModel.from_pretrained(text_encoder_location, subfolder=None, torch_dtype=torch.float16)
     else:
-        text_encoder = T5EncoderModel.from_pretrained(
-            text_encoder_location,
-            subfolder=None if args.text_encoder_path else "text_encoder",
-            torch_dtype=torch.float16,
-        )
+        if base_has_text_encoder:
+            text_encoder = T5EncoderModel.from_pretrained(
+                model_root, subfolder="text_encoder", torch_dtype=torch.float16
+            )
+        else:
+            raise RuntimeError(
+                "No text encoder path provided and the base model location does not contain a diffusers-formatted "
+                "text_encoder directory. Supply --text-encoder-path with compatible weights."
+            )
 
     pipe = xFuserPixArtAlphaPipeline.from_pretrained(
         engine_config.model_config.model,
